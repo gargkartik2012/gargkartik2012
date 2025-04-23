@@ -8,7 +8,7 @@ Hi there! 👋 I'm **Kartik Garg**, a passionate **Software Developer** with exp
 - 🔭 Currently working on: **API development** and enhancing system performance.  
 - 🌱 Learning: **Advanced Spring Boot**, microservices, and full-stack optimization.  
 - 💬 Ask me about: **Java, Spring Boot, React, Angular, MySQL, API Development**.  
-- 📫 Reach me at: [Email](mailto:gargkartik1202@gmail.com) | [LinkedIn](https://linkedin.com/in/kartik-garg-developer) | [GitHub](https://github.com/gargkartik2012)  
+- 📫 Reach me at: [Email](mailto:gargkartik1202@gmail.com) | [LinkedIn](https://linkedin.com/in/kartik-garg-dev) | [GitHub](https://github.com/gargkartik2012)  
 - ⚡ Fun fact: I enjoy experimenting with desserts and wine pairings 🍷🍫.  
 
 ---
@@ -20,7 +20,7 @@ Hi there! 👋 I'm **Kartik Garg**, a passionate **Software Developer** with exp
 - **Frameworks & Tools:** Hibernate, Microservices, JUnit, Mockito, JWT Tokens  
 
 ### **Frontend Development**  
-- **Languages & Libraries:** JavaScript, React, Angular, HTML/CSS  
+- **Languages & Libraries:** JavaScript, React, Angular, HTML/CSS, React-Native  
 - **Styling & UI:** Bootstrap, Material-UI  
 
 ### **DevOps & Tools**  
