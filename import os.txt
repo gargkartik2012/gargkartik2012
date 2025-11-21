@@ -10,47 +10,35 @@ from transformers import (
 )
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MultiLabelBinarizer
-from torch.nn import BCEWithLogitsLoss
-
+from sklearn.utils.class_weight import compute_class_weight
+from sklearn.metrics import precision_score, recall_score, f1_score
 
 # ============================================================
 #                  Utility functions
 # ============================================================
 
 def normalize_mrn(x):
-    """Return MRN as clean string. Handles int/float/str + leading zeros."""
     if pd.isna(x):
         return None
-    x = str(x).strip()
-    x = x.replace(".0", "")
-    x = x.replace("-", "")
-    if not x.isdigit():
-        digits = ''.join([c for c in x if c.isdigit()])
-        if digits:
-            x = digits
-    return x
-
+    x = str(x).strip().replace(".0", "").replace("-", "")
+    digits = ''.join([c for c in x if c.isdigit()])
+    return digits if digits else x
 
 def find_mrn_column(columns):
-    """Pick the MRN column from text/ICD files."""
     for c in columns:
         c2 = c.lower().replace("#", "").replace(" ", "")
         if c2 in ["mrn", "mrn#", "patientmrn", "mrnno"]:
             return c
     return None
 
-
 def find_text_column(columns):
-    """Choose the text column from text file."""
     candidates = ["textmrn", "text", "note", "clinicaltext"]
     for c in columns:
         if c.lower().replace(" ", "") in candidates:
             return c
     return None
 
-
-def find_icd_columns(columns, max_icd=4):
-    """Return ICD-1 .. ICD-4 columns present."""
+def find_icd_columns(columns, max_icd=7):
     cols = []
     for i in range(1, max_icd + 1):
         name = f"icd-{i}".lower()
@@ -59,84 +47,60 @@ def find_icd_columns(columns, max_icd=4):
                 cols.append(c)
     return cols
 
-
 def clean_text(s):
     if pd.isna(s):
         return ""
-    s = str(s)
-    s = s.replace("\xa0", " ")
-    s = s.replace("\n", " ")
+    s = str(s).replace("\xa0", " ").replace("\n", " ")
     return " ".join(s.split())
 
+# ============================================================
+#              Merging + Dataset Preparation
+# ============================================================
+
+def load_text_file(path):
+    df = pd.read_excel(path)  # Assuming it's an Excel file
+    df.columns = [c.strip() for c in df.columns]  # Clean column names
+    return df
+
+def load_icd_file(path):
+    df = pd.read_csv(path)  # ICD data is in CSV format
+    df.columns = [c.strip() for c in df.columns]  # Clean column names
+    return df
+
+def prepare_data(df_text, df_icd):
+    text_mrn = find_mrn_column(df_text.columns)
+    icd_mrn = find_mrn_column(df_icd.columns)
+    text_col = find_text_column(df_text.columns)
+    icd_cols = find_icd_columns(df_icd.columns, max_icd=7)
+
+    # Normalize MRN columns
+    df_text["MRN_CLEAN"] = df_text[text_mrn].apply(normalize_mrn)
+    df_icd["MRN_CLEAN"] = df_icd[icd_mrn].apply(normalize_mrn)
+    
+    # Clean the text data
+    df_text["TEXT_CLEAN"] = df_text[text_col].apply(clean_text)
+
+    # Merge the datasets on the clean MRN
+    merged = pd.merge(
+        df_text[["MRN_CLEAN", "TEXT_CLEAN"]],
+        df_icd[["MRN_CLEAN"] + icd_cols],
+        on="MRN_CLEAN",
+        how="inner"
+    )
+
+    # Create a list of ICD codes for each row
+    merged["ICD_LIST"] = merged[icd_cols].apply(
+        lambda row: [c for c in row.tolist() if isinstance(c, str) and c.strip()],
+        axis=1
+    )
+
+    merged = merged[merged["ICD_LIST"].str.len() > 0]
+    merged = merged[merged["TEXT_CLEAN"].str.len() > 5].reset_index(drop=True)
+    print(f"✔ Final merged rows = {len(merged)}")
+    return merged
 
 # ============================================================
-#               Merging + Dataset Preparation
-# ============================================================
-
-class DataBuilder:
-    def __init__(self, max_icd=4):
-        self.max_icd = max_icd
-
-    def load_text_file(self, path):
-        df = pd.read_excel(path)
-        df = df.rename(columns={c: c.strip() for c in df.columns})
-        return df
-
-    def load_icd_file(self, path):
-        df = pd.read_csv(path)
-        df = df.rename(columns={c: c.strip() for c in df.columns})
-        return df
-
-    def prepare(self, df_text, df_icd):
-        """Main merge logic."""
-        text_mrn = find_mrn_column(df_text.columns)
-        if text_mrn is None:
-            raise ValueError("No MRN column in text file.")
-
-        icd_mrn = find_mrn_column(df_icd.columns)
-        if icd_mrn is None:
-            raise ValueError("No MRN column in ICD file.")
-
-        text_col = find_text_column(df_text.columns)
-        if text_col is None:
-            raise ValueError("No text column found in text file.")
-
-        icd_cols = find_icd_columns(df_icd.columns, self.max_icd)
-        if len(icd_cols) == 0:
-            raise ValueError("No ICD columns found (ICD-1..ICD-4).")
-
-        # Normalize MRN values
-        df_text["MRN_CLEAN"] = df_text[text_mrn].apply(normalize_mrn)
-        df_icd["MRN_CLEAN"] = df_icd[icd_mrn].apply(normalize_mrn)
-
-        df_text["TEXT_CLEAN"] = df_text[text_col].apply(clean_text)
-
-        # Merge
-        merged = pd.merge(
-            df_text[["MRN_CLEAN", "TEXT_CLEAN"]],
-            df_icd[["MRN_CLEAN"] + icd_cols],
-            on="MRN_CLEAN",
-            how="inner"
-        )
-
-        # ICD list
-        merged["ICD_LIST"] = merged[icd_cols].apply(
-            lambda row: [c for c in row.tolist() if isinstance(c, str) and c.strip()],
-            axis=1
-        )
-
-        # Drop rows with empty ICD list or empty text
-        merged = merged[merged["ICD_LIST"].str.len() > 0]
-        merged = merged[merged["TEXT_CLEAN"].str.len() > 5]
-
-        merged = merged.reset_index(drop=True)
-        print(f"✔ Final merged rows = {len(merged)}")
-
-        return merged
-
-
-# ============================================================
-#                 Multi-label BERT Dataset
+#               Multi-label BERT Dataset
 # ============================================================
 
 class ICDDataset(torch.utils.data.Dataset):
@@ -149,48 +113,54 @@ class ICDDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         text = str(self.texts[idx])
         label = torch.tensor(self.labels[idx], dtype=torch.float)
-
         enc = self.tokenizer(
-            text,
-            truncation=True,
-            padding="max_length",
-            max_length=self.max_len,
-            return_tensors="pt"
+            text, truncation=True, padding="max_length",
+            max_length=self.max_len, return_tensors="pt"
         )
-
-        return {
-            "input_ids": enc["input_ids"].squeeze(0),
-            "attention_mask": enc["attention_mask"].squeeze(0),
-            "labels": label
-        }
+        return {"input_ids": enc["input_ids"].squeeze(0),
+                "attention_mask": enc["attention_mask"].squeeze(0),
+                "labels": label}
 
     def __len__(self):
         return len(self.texts)
 
+# ============================================================
+#                 Custom Trainer Class with Class Weights
+# ============================================================
+
+class CustomTrainer(Trainer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Compute class weights based on label frequencies
+        self.class_weights = compute_class_weight(
+            class_weight="balanced", 
+            classes=np.arange(len(self.args.label_list)), 
+            y=self.args.label_list
+        )
+        self.class_weights = torch.tensor(self.class_weights, dtype=torch.float).to(self.args.device)
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        labels = inputs.pop("labels")
+        outputs = model(**inputs)
+        logits = outputs.logits
+
+        # Apply BCEWithLogitsLoss with class weights
+        loss_fct = torch.nn.BCEWithLogitsLoss(weight=self.class_weights)
+        loss = loss_fct(logits, labels)
+        return (loss, outputs) if return_outputs else loss
 
 # ============================================================
-#                     Trainer Wrapper
+#               BERT Multi-Label Trainer
 # ============================================================
 
 class BertMultiLabelTrainer:
     def __init__(self, merged_df, output_dir="model_out"):
         self.df = merged_df
         self.output_dir = output_dir
-
         self.tokenizer = BertTokenizerFast.from_pretrained("emilyalsentzer/Bio_ClinicalBERT")
-
-        # Fit binarizer
         self.mlb = MultiLabelBinarizer()
         self.label_matrix = self.mlb.fit_transform(self.df["ICD_LIST"])
-
-        # Train–val split
-        self.train_df, self.val_df = train_test_split(
-            self.df,
-            test_size=0.15,
-            random_state=42,
-            shuffle=True
-        )
-
+        self.train_df, self.val_df = train_test_split(self.df, test_size=0.15, random_state=42, shuffle=True)
         self.model = BertForSequenceClassification.from_pretrained(
             "emilyalsentzer/Bio_ClinicalBERT",
             num_labels=len(self.mlb.classes_),
@@ -200,39 +170,29 @@ class BertMultiLabelTrainer:
     def build_datasets(self):
         train_labels = self.mlb.transform(self.train_df["ICD_LIST"])
         val_labels = self.mlb.transform(self.val_df["ICD_LIST"])
-
-        self.train_dataset = ICDDataset(
-            list(self.train_df["TEXT_CLEAN"]),
-            train_labels,
-            self.tokenizer
-        )
-        self.val_dataset = ICDDataset(
-            list(self.val_df["TEXT_CLEAN"]),
-            val_labels,
-            self.tokenizer
-        )
+        self.train_dataset = ICDDataset(list(self.train_df["TEXT_CLEAN"]), train_labels, self.tokenizer)
+        self.val_dataset = ICDDataset(list(self.val_df["TEXT_CLEAN"]), val_labels, self.tokenizer)
 
     def train(self):
         self.build_datasets()
-
-        # Hyperparameters tuned for ~400 rows
         training_args = TrainingArguments(
             output_dir=self.output_dir,
-            per_device_train_batch_size=4,
-            per_device_eval_batch_size=4,
+            per_device_train_batch_size=8,
+            per_device_eval_batch_size=8,
             gradient_accumulation_steps=2,
             learning_rate=2e-5,
             num_train_epochs=8,
             weight_decay=0.01,
-            logging_steps=10,
+            logging_dir='./logs',
+            logging_steps=50,
             evaluation_strategy="epoch",
             save_strategy="epoch",
             load_best_model_at_end=True,
             metric_for_best_model="loss",
-            warmup_steps=50
+            warmup_steps=50,
         )
 
-        trainer = Trainer(
+        trainer = CustomTrainer(
             model=self.model,
             args=training_args,
             train_dataset=self.train_dataset,
@@ -241,12 +201,10 @@ class BertMultiLabelTrainer:
 
         trainer.train()
         trainer.save_model(self.output_dir)
-
         return trainer
 
-
 # ============================================================
-#                       Evaluator
+#               Evaluation Metrics and Prediction
 # ============================================================
 
 class Evaluator:
@@ -256,60 +214,61 @@ class Evaluator:
         self.tokenizer = tokenizer
         self.mlb = mlb
 
-    def predict_text(self, text):
-        enc = self.tokenizer(
-            text,
-            return_tensors="pt",
-            truncation=True,
-            padding=True,
-            max_length=512
-        )
-
+    def predict_text(self, text, threshold=0.25, top_n=3):
+        enc = self.tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=512)
         with torch.no_grad():
             logits = self.model(**enc).logits
-
         probs = torch.sigmoid(logits).numpy()[0]
-        indices = np.where(probs >= 0.3)[0]
+        indices = np.where(probs >= threshold)[0]
+        if len(indices) == 0:
+            indices = np.argsort(probs)[-top_n:]
         return [self.mlb.classes_[i] for i in indices]
+
+    def evaluate(self, df):
+        true_labels = self.mlb.transform(df["ICD_LIST"])
+        predicted_labels = []
+
+        for text in df["TEXT_CLEAN"]:
+            pred = self.predict_text(text)
+            predicted_labels.append(self.mlb.transform([pred])[0])
+
+        precision = precision_score(true_labels, predicted_labels, average="micro")
+        recall = recall_score(true_labels, predicted_labels, average="micro")
+        f1 = f1_score(true_labels, predicted_labels, average="micro")
+
+        print(f"Precision: {precision:.4f}")
+        print(f"Recall: {recall:.4f}")
+        print(f"F1 Score: {f1:.4f}")
 
     def sanity(self, df, count=5):
         for i in range(min(count, len(df))):
             print("\n==============================")
-            print(f"Sample {i + 1}")
+            print(f"Sample {i+1}")
             print("True ICDs:", df.iloc[i]["ICD_LIST"])
             pred = self.predict_text(df.iloc[i]["TEXT_CLEAN"])
-            print("Predicted:", pred)
-            # Print probabilities for debugging
-            enc = self.tokenizer(df.iloc[i]["TEXT_CLEAN"], return_tensors="pt", truncation=True, padding=True, max_length=512)
-            with torch.no_grad():
-                logits = self.model(**enc).logits
-            probs = torch.sigmoid(logits).numpy()[0]
-            print("Probabilities:", probs[:10], "...")  # Show first 10 probs
+            print("Predicted ICDs:", pred)
             print("Text:", df.iloc[i]["TEXT_CLEAN"][:300], "...")
-
-
+            
 # ============================================================
-#                        Main
+#                       Main
 # ============================================================
 
 if __name__ == "__main__":
-    INPUT_TEXT = "merged_mrn_text.xlsx"
-    INPUT_ICD = "first.csv"
+    INPUT_TEXT = "INPUT_CSV/merged_mrn_text.xlsx"
+    INPUT_ICD = "INPUT_ICD/first.csv"
 
     print("Loading input files...")
-    db = DataBuilder(max_icd=4)
+    df_text = load_text_file(INPUT_TEXT)
+    df_icd = load_icd_file(INPUT_ICD)
 
-    df_text = db.load_text_file(INPUT_TEXT)
-    df_icd = db.load_icd_file(INPUT_ICD)
+    print("Merging datasets...")
+    merged = prepare_data(df_text, df_icd)
 
-    print("Merging...")
-    merged = db.prepare(df_text, df_icd)
-
-    print("Training...")
+    print("Training the model...")
     trainer_wrapper = BertMultiLabelTrainer(merged_df=merged)
     trainer = trainer_wrapper.train()
 
-    print("Evaluating sanity samples...")
+    print("Evaluating model performance...")
     evaluator = Evaluator(trainer, trainer_wrapper.tokenizer, trainer_wrapper.mlb)
-    evaluator.sanity(merged, count=6)
-
+    evaluator.evaluate(merged)
+    evaluator.sanity(merged, count=5)
