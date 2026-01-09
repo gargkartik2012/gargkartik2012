@@ -4,131 +4,16 @@ import numpy as np
 import torch
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MultiLabelBinarizer
-
 from torch.nn import BCEWithLogitsLoss
+
+
 from transformers import (
     BertTokenizerFast,
     BertForSequenceClassification,
     Trainer,
-    TrainingArguments
+    TrainingArguments,
 )
 
-# ============================================================
-#                UTILITY FUNCTIONS
-# ============================================================
-
-def normalize_mrn(x):
-    """Normalize MRN numbers into consistent digit-only format."""
-    if pd.isna(x):
-        return None
-    x = str(x).strip().replace(".0", "").replace("-", "")
-    digits = ''.join(ch for ch in x if ch.isdigit())
-    return digits if digits else x
-
-
-def clean_text(s):
-    if pd.isna(s):
-        return ""
-    s = str(s).replace("\xa0", " ").replace("\n", " ")
-    return " ".join(s.split())
-
-
-def find_mrn_column(cols):
-    for c in cols:
-        c2 = c.lower().replace(" ", "").replace("#", "")
-        if c2 in ["mrn", "patientmrn", "mrnno"]:
-            return c
-    return None
-
-
-def find_text_column(cols):
-    candidates = ["text", "note", "clinicaltext", "textmrn", "longtext"]
-    for c in cols:
-        if c.lower().replace(" ", "") in candidates:
-            return c
-    return None
-
-
-def find_icd_columns(cols):
-    return [c for c in cols if c.lower().startswith("icd")]
-
-
-def find_cpt_columns(cols):
-    return [c for c in cols if "cpt" in c.lower()]
-
-
-def clean_code(x):
-    """Clean ICD / CPT code so both numbers & strings work."""
-    if pd.isna(x):
-        return None
-    x = str(x).strip()
-    x = x.replace(" ", "")
-    x = x.replace(".0", "")
-    x = x.upper()
-    return x if x not in ["", "NONE", "NAN"] else None
-
-
-# ============================================================
-#                 DATA BUILDER
-# ============================================================
-
-class DataBuilder:
-    def load_text_file(self, path):
-        df = pd.read_excel(path)
-        df.columns = [c.strip() for c in df.columns]
-        return df
-
-    def load_icd_file(self, path):
-        df = pd.read_csv(path)
-        df.columns = [c.strip() for c in df.columns]
-        return df
-
-    def prepare(self, df_text, df_icd):
-        text_mrn = find_mrn_column(df_text.columns)
-        icd_mrn = find_mrn_column(df_icd.columns)
-        text_col = find_text_column(df_text.columns)
-
-        icd_cols = find_icd_columns(df_icd.columns)
-        cpt_cols = find_cpt_columns(df_icd.columns)
-
-        print("Detected ICD columns =", icd_cols)
-        print("Detected CPT columns =", cpt_cols)
-
-        # clean MRN + TEXT
-        df_text["MRN_CLEAN"] = df_text[text_mrn].apply(normalize_mrn)
-        df_icd["MRN_CLEAN"] = df_icd[icd_mrn].apply(normalize_mrn)
-        df_text["TEXT_CLEAN"] = df_text[text_col].apply(clean_text)
-
-        # merge
-        merged = pd.merge(
-            df_text[["MRN_CLEAN", "TEXT_CLEAN"]],
-            df_icd[["MRN_CLEAN"] + icd_cols + cpt_cols],
-            on="MRN_CLEAN",
-            how="inner"
-        )
-
-        # ICD list
-        merged["ICD_LIST"] = merged[icd_cols].apply(
-            lambda row: [clean_code(x) for x in row if clean_code(x)],
-            axis=1
-        )
-
-        # CPT list
-        merged["CPT_LIST"] = merged[cpt_cols].apply(
-            lambda row: [clean_code(x) for x in row if clean_code(x)],
-            axis=1
-        )
-
-        merged = merged[merged["TEXT_CLEAN"].str.len() > 10]
-        merged = merged.reset_index(drop=True)
-
-        print("✔ Final merged rows =", len(merged))
-        return merged
-
-
-# ============================================================
-#                    DATASET CLASS
-# ============================================================
 
 class MultiLabelDataset(torch.utils.data.Dataset):
     def __init__(self, texts, labels, tokenizer, max_len=512):
@@ -149,104 +34,102 @@ class MultiLabelDataset(torch.utils.data.Dataset):
             truncation=True,
             padding="max_length",
             max_length=self.max_len,
-            return_tensors="pt"
+            return_tensors="pt",
         )
 
         return {
             "input_ids": enc["input_ids"].squeeze(0),
             "attention_mask": enc["attention_mask"].squeeze(0),
-            "labels": label
+            "labels": label,
         }
 
-
-# ============================================================
-#                    METRIC FUNCTION
-# ============================================================
-
-from sklearn.metrics import (
-    f1_score, precision_score, recall_score,
-    hamming_loss, jaccard_score, roc_auc_score
-)
-
-def compute_metrics(eval_pred):
-    logits, labels = eval_pred
-    preds = (logits > 0).astype(int)
-
-    try:
-        roc_micro = roc_auc_score(labels, logits, average="micro")
-        roc_macro = roc_auc_score(labels, logits, average="macro")
-    except:
-        roc_micro = roc_macro = 0
-
-    return {
-        "f1_micro": f1_score(labels, preds, average="micro", zero_division=0),
-        "f1_macro": f1_score(labels, preds, average="macro", zero_division=0),
-        "precision_micro": precision_score(labels, preds, average="micro", zero_division=0),
-        "precision_macro": precision_score(labels, preds, average="macro", zero_division=0),
-        "recall_micro": recall_score(labels, preds, average="micro", zero_division=0),
-        "recall_macro": recall_score(labels, preds, average="macro", zero_division=0),
-        "hamming_loss": hamming_loss(labels, preds),
-        "jaccard": jaccard_score(labels, preds, average="samples", zero_division=0),
-        "roc_micro": roc_micro,
-        "roc_macro": roc_macro
-    }
-
-
-# ============================================================
-#                 CUSTOM TRAINER
-# ============================================================
-
 class CustomTrainer(Trainer):
-    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        labels = inputs["labels"]  # FIXED
+
+    def __init__(self, *args, pos_weight=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pos_weight = pos_weight
+
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+        labels = inputs.pop("labels")
         outputs = model(**inputs)
         logits = outputs.logits
-        loss = BCEWithLogitsLoss()(logits, labels)
+
+        loss_fn = BCEWithLogitsLoss(
+            pos_weight=self.pos_weight.to(logits.device)
+        )
+        loss = loss_fn(logits, labels)
+
         return (loss, outputs) if return_outputs else loss
 
-
-# ============================================================
-#                    CODE TRAINER
-# ============================================================
-
 class CodeTrainer:
-    def __init__(self, df, label_column, model_name="emilyalsentzer/Bio_ClinicalBERT", output_dir="model_out"):
+    def __init__(
+        self,
+        df,
+        label_column,
+        model_name="emilyalsentzer/Bio_ClinicalBERT",
+        output_dir="model_out",
+    ):
         self.df = df
         self.label_column = label_column
         self.model_name = model_name
         self.output_dir = output_dir
 
+        # Load tokenizer
         self.tokenizer = BertTokenizerFast.from_pretrained(model_name)
 
-        # multilabel binarizer
+        #  Split FIRST
+        train_df, val_df = train_test_split(
+            df, test_size=0.15, random_state=42
+        )
+
+        #  Fit MLB ONLY on train
         self.mlb = MultiLabelBinarizer()
-        self.mlb.fit(df[label_column])
+        self.mlb.fit(train_df[label_column])
 
-        train_df, val_df = train_test_split(df, test_size=0.15, random_state=42)
+        #  Compute class weights from train only
+        y_train = self.mlb.transform(train_df[label_column])
+        label_counts = np.sum(y_train, axis=0)
+        neg_counts = len(train_df) - label_counts
 
-        self.train_labels = self.mlb.transform(train_df[label_column])
-        self.val_labels = self.mlb.transform(val_df[label_column])
+        pos_weight = neg_counts / (label_counts + 1e-6)
+        self.pos_weight = torch.tensor(pos_weight, dtype=torch.float)
 
-        self.train_dataset = MultiLabelDataset(train_df["TEXT_CLEAN"].tolist(), self.train_labels, self.tokenizer)
-        self.val_dataset = MultiLabelDataset(val_df["TEXT_CLEAN"].tolist(), self.val_labels, self.tokenizer)
+        # Datasets
+        self.train_dataset = MultiLabelDataset(
+            train_df["TEXT_CLEAN"].tolist(),
+            y_train,
+            self.tokenizer,
+        )
 
-        # model
+        self.val_dataset = MultiLabelDataset(
+            val_df["TEXT_CLEAN"].tolist(),
+            self.mlb.transform(val_df[label_column]),
+            self.tokenizer,
+        )
+
+        # Model
         self.model = BertForSequenceClassification.from_pretrained(
             model_name,
             num_labels=len(self.mlb.classes_),
-            problem_type="multi_label_classification"
+            problem_type="multi_label_classification",
         )
+        
 
-    def train(self):
+    # Train model function
+
+    def train_model(self):
+        os.makedirs(self.output_dir, exist_ok=True)
+
         args = TrainingArguments(
             output_dir=self.output_dir,
-            per_device_train_batch_size=4,
-            per_device_eval_batch_size=4,
+            per_device_train_batch_size=3,
+            per_device_eval_batch_size=3,
             learning_rate=2e-5,
-            num_train_epochs=6,
-            evaluation_strategy="epoch",   # FIXED
+            num_train_epochs=4,
+            eval_strategy="epoch",
             save_strategy="epoch",
-            load_best_model_at_end=True
+            load_best_model_at_end=True,
         )
 
         trainer = CustomTrainer(
@@ -254,54 +137,70 @@ class CodeTrainer:
             args=args,
             train_dataset=self.train_dataset,
             eval_dataset=self.val_dataset,
-            compute_metrics=compute_metrics
+            pos_weight=self.pos_weight
+            
         )
 
         trainer.train()
         trainer.save_model(self.output_dir)
+        # Save tokenizer inside model folder
+        self.tokenizer.save_pretrained(self.output_dir)
 
-        return trainer
-
-
-# ============================================================
-#                    EVALUATOR
-# ============================================================
-
-class Evaluator:
-    def __init__(self, model, tokenizer, mlb):
-        self.model = model
-        self.tokenizer = tokenizer
-        self.mlb = mlb
-
-    def predict(self, text, threshold=0.5):
-        enc = self.tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=512)
-        with torch.no_grad():
-            logits = self.model(**enc).logits
-        probs = torch.sigmoid(logits).numpy()[0]
-        idx = np.where(probs >= threshold)[0]
-        return [self.mlb.classes_[i] for i in idx]
-
-
-# ============================================================
-#                      MAIN
-# ============================================================
+        # Save class labels
+        np.save(
+            os.path.join(self.output_dir, "mlb_classes.npy"),
+            np.array(self.mlb.classes_),
+        )
 
 if __name__ == "__main__":
-    TEXT_FILE = "/kaggle/input/inputset/merged_mrn_text.xlsx"
-    CODE_FILE = "/kaggle/input/inputset/first.csv"
+    MERGED_FILE = "dataset/module1105/1105 (2).csv"
 
-    db = DataBuilder()
-    df_text = db.load_text_file(TEXT_FILE)
-    df_code = db.load_icd_file(CODE_FILE)
+    df = pd.read_csv(MERGED_FILE, dtype=str)
 
-    merged = db.prepare(df_text, df_code)
+    df = df.apply(lambda col: col.str.strip() 
+                  if col.dtype == "object" else col)
 
-    # ICD MODEL
-    icd_trainer = CodeTrainer(merged, label_column="ICD_LIST", output_dir="ICD_MODEL")
-    icd_model = icd_trainer.train()
 
-    # CPT MODEL
-    cpt_trainer = CodeTrainer(merged, label_column="CPT_LIST", output_dir="CPT_MODEL")
-    cpt_model = cpt_trainer.train()
+    df = df.dropna(how="all")             # remove blank rows
+    df = df.dropna(axis=1, how="all")     # remove blank columns
 
-    print("✔ Training complete for both ICD and CPT models.")
+    icd_cols = [c for c in df.columns if c.upper().startswith("ICD")]
+    cpt_cols = [c for c in df.columns if c.upper().startswith("CPT")]
+
+    def clean_code_list(code_list):
+        cleaned = []
+        for c in code_list:
+            if pd.isna(c):
+                continue
+            c = str(c).strip()        # remove outer whitespace
+            c = c.replace(" ", "")    # remove inner spaces
+            if c != "":
+                cleaned.append(c)
+        return cleaned
+
+    df["ICD_LIST"] = df[icd_cols].apply(
+        lambda row: clean_code_list(row.values), axis=1
+    )
+
+    df["CPT_LIST"] = df[cpt_cols].apply(
+        lambda row: clean_code_list(row.values), axis=1
+    )
+
+    # Remove rows with no ICD/CPT codes at all
+    df = df[df["ICD_LIST"].apply(len) > 0]
+    df = df[df["CPT_LIST"].apply(len) > 0]
+
+
+    df["TEXT_CLEAN"] = df["Text"].fillna("").astype(str).str.strip()
+    
+    icd_trainer = CodeTrainer(
+        df, label_column="ICD_LIST", output_dir="ICD_MODEL")
+    icd_trainer.train_model()
+   
+    cpt_trainer = CodeTrainer(
+        df, label_column="CPT_LIST", output_dir="CPT_MODEL")
+    cpt_trainer.train_model()
+    
+
+
+      
