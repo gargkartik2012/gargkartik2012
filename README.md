@@ -32,13 +32,13 @@ Hi there! 👋 I'm **Kartik Garg**, a passionate **Software Engineer** with expe
 
 ## 🚀 Key Projects  
 
-### **Hotel Service API** ([GitHub Repo](#))  
+### **Hotel Service API**   
 - **Tech Stack:** Java, Spring Boot, MySQL, Hibernate  
 - Developed a **scalable REST API**, improving query execution time by **40%**.  
 - Integrated **hotel booking services**, increasing transactions by **20%**.  
 - Implemented a search feature for filtering hotels within a **10 km radius** of user-selected locations.  
 
-### **Online Service Platform** ([GitHub Repo](#))  
+### **Online Service Platform** 
 - **Tech Stack:** Spring Boot, Java, MySQL, Git  
 - Merged **5+ e-commerce platforms** into a single interface, boosting satisfaction by **40%**.  
 - Led a **3-member team** to integrate **secure payment gateways**.  
