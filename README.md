@@ -1,6 +1,6 @@
 # 👨‍💻 Kartik Garg
 
-Hi there! 👋 I'm **Kartik Garg**, a passionate **Software Engineer** with expertise in **backend development** and **web technologies**. **B.Tech in Information Technology** at **APJ Abdul Kalam Technical University**, I specialize in building scalable and efficient applications using **Spring Boot, Angular, and MySQL**.
+Hi there! 👋 I'm **Kartik Garg**, a passionate **Software Engineer** with expertise in **backend development** and **web technologies**. **B.Tech in Information Technology** at **APJ Abdul Kalam Technical University**, I specialize in building scalable and efficient applications using **Spring Boot, python,React, and MySQL**.
 
 ---
 
